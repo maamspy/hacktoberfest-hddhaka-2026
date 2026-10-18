@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fieldkit"
+version = "0.1.0"
+description = "Local decision tool for forward-deployed engineers. Laya decides, humans review."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pyyaml>=6.0",
+    "laya>=0.3.20",
+]
+
+[project.optional-dependencies]
+console = ["streamlit>=1.37"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+fieldkit = "fieldkit.cli:main"
+fieldkit-web = "fieldkit.cli:web_entrypoint"
+
+[tool.setuptools]
+packages = ["fieldkit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

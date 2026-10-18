@@ -1,2 +1,6 @@
+pyyaml>=6.0
+laya>=0.3.20
 streamlit>=1.37
-requests>=2.32
+
+# dev
+pytest>=8.0

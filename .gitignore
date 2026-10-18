@@ -11,6 +11,10 @@ env/
 .env.*
 !.env.example
 
+# Fieldkit workspace: capture logs, eval results and review queues hold
+# customer data, so they stay local by default.
+.fieldkit/
+
 .DS_Store
 Thumbs.db
 .idea/
