@@ -381,7 +381,16 @@ def cmd_review_resolve(ctx: Ctx, args) -> int:
     checked = args.checked or None
     row = review.resolve(ctx.root, args.index, args.decision, args.note, checked)
     if row is None:
-        print(f"No pending item at index {args.index}.", file=sys.stderr)
+        pending = review.pending(ctx.root)
+        if not pending:
+            print("Nothing is pending. The queue is empty.", file=sys.stderr)
+        else:
+            valid = ", ".join(str(i) for i in range(len(pending)))
+            print(
+                f"No pending item at index {args.index}. "
+                f"There are {len(pending)} pending, at index {valid}.",
+                file=sys.stderr,
+            )
         return 1
     log.record(
         ctx.root,
