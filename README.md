@@ -47,12 +47,18 @@ From any project directory:
 ```bash
 cd /path/to/your/project
 fieldkit init      # once: scaffolds ./.fieldkit/
-fieldkit start     # launches the web console on http://localhost:8501
+fieldkit start     # registers this project, serves the console on :8501
 ```
 
-`fieldkit start` keeps this project's reports, queue and notes in
-`./.fieldkit/`. Every project gets its own workspace, so nothing leaks
-between customers.
+The console is **one always-on service**, not one per project. `fieldkit
+start` registers the directory you are in and brings the console up; run
+it again in another directory and it registers that one too, then tells
+you the console is already running. Switch between projects from the
+sidebar.
+
+This project's reports, queue and notes live in `./.fieldkit/`. Every
+project gets its own workspace, so nothing leaks between customers — but
+they all write to one **central ledger** you can read across all of them.
 
 The CLI works the same way — it picks up the current directory's
 workspace automatically:
@@ -70,7 +76,13 @@ Install once, anywhere:
 pip install -e /path/to/fieldkit
 ```
 
-Override the workspace with `FIELDKIT_HOME` or `fieldkit -w DIR`.
+Override the workspace with `FIELDKIT_HOME` or `fieldkit -w DIR`. The
+central hub lives at `~/.fieldkit/` (override with `FIELDKIT_HUB`).
+
+```bash
+fieldkit projects     # every registered project
+fieldkit hub          # where the hub is, and whether the server is up
+```
 
 **The full user guide is in [`docs/USAGE.md`](docs/USAGE.md)** — every
 command, every option, and how to point Fieldkit at the right project.
@@ -79,23 +91,29 @@ command, every option, and how to point Fieldkit at the right project.
 
 | Page | What it is |
 | --- | --- |
-| **Overview** | Health of both models, counts, and a timeline of everything that happened |
+| **Overview** | Health of both models, counts, the queue across every project, and a timeline |
+| **Projects** | Every registered project, and the hub status |
 | **HITL queue** | Escalated decisions, each with a **checklist** of what to actually check, and a resolve button |
 | **Reports** | Environment discovery report, eval accuracy and calibration, the capture log |
-| **Log** | The plain-text activity log, live |
+| **Log** | The activity log — this project, or the central ledger across all of them |
 | **Follow-up** | Ask Gemma a question about any queued item; append the answer to the handoff notes |
 | **Eval cases** | Add an expert note, let Laya label it, approve it, run the set, calibrate |
 | **Notes** | The Markdown handoff log |
 | **Fleet** | Customer / model / prompt version table (human-maintained) |
 
-### The log
+### The log and the central ledger
 
 Everything else in the workspace is structured — JSONL for records, YAML
 for the fleet, Markdown for notes. That is right for machines and wrong
 for a person who wants to know what happened.
 
-`fieldkit.log` is the plain-text one. Append-only, one event per line,
-no rotation, no parsing:
+`fieldkit.log` is the plain-text one, per project. Append-only, one
+event per line, no rotation, no parsing.
+
+Every event is also written to the **central ledger** in the hub
+(`~/.fieldkit/ledger.log`), tagged with the project it came from, so
+you can read everything that happened across all your customers in one
+file. `fieldkit log --all` prints it.
 
 ```
 2026-10-18 14:41:53 | eval added | ev_1792312913806 | expect=bug
@@ -107,7 +125,8 @@ no rotation, no parsing:
 ```
 
 ```bash
-fieldkit log              # print it
+fieldkit log              # this project
+fieldkit log --all        # every project, the central ledger
 fieldkit log --limit 20   # last 20 lines
 fieldkit log --follow     # tail it
 ```

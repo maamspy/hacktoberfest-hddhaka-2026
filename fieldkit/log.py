@@ -30,6 +30,11 @@ def path(root: Path) -> Path:
 def record(root: Path, category: str, message: str, *fields: str) -> None:
     """Append one event.
 
+    Writes to two places: the project's own log, and the central ledger
+    in the hub. The project log is what that project is about; the
+    ledger is the one file an FDE reads to see what happened across all
+    of them.
+
     `fields` are plain strings; anything with a `|` in it is sanitised
     so a line can never be broken by its own content.
     """
@@ -39,7 +44,21 @@ def record(root: Path, category: str, message: str, *fields: str) -> None:
         if field is None or field == "":
             continue
         line += f" | {_clean(str(field))}"
+
     store.append_text(path(root), line + "\n")
+
+    # The central ledger, tagged with the project it came from.
+    try:
+        from fieldkit import hub
+
+        project = root.parent.name or str(root)
+        hub.ledger_line(f"{stamp} | {project.ljust(WIDTH)} | {category.ljust(WIDTH)} | "
+                        f"{_clean(message)}" +
+                        "".join(f" | {_clean(str(f))}" for f in fields
+                                if f is not None and f != ""))
+    except Exception:
+        # A broken hub must never break a decision.
+        pass
 
 
 def _clean(value: str) -> str:

@@ -19,8 +19,14 @@ from fieldkit import laya_engine
 
 
 @pytest.fixture(autouse=True)
-def no_model_downloads(monkeypatch):
-    """Make Laya look unavailable, so nothing reaches the network."""
+def no_model_downloads(monkeypatch, tmp_path):
+    """Make Laya look unavailable, so nothing reaches the network.
+
+    This also isolates the hub. The CLI registers the current directory
+    as a project on every command, so without this the real project
+    register fills up with pytest temporary directories.
+    """
+    monkeypatch.setenv("FIELDKIT_HUB", str(tmp_path / "hub"))
     monkeypatch.setattr(laya_engine, "_get_router", lambda: None)
     monkeypatch.setattr(laya_engine, "load_error", lambda: "Laya disabled during tests.")
 

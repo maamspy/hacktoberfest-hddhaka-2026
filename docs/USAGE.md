@@ -2,14 +2,47 @@
 
 Everything you can do, and how to point it at the right place.
 
-## The one concept: the workspace
+## The one concept: workspace and hub
 
-Fieldkit keeps all of its state in a **workspace** — a folder of plain
-files holding the review queue, the eval set, the capture log, the
-activity log, the notes and the fleet table. There is no database and no
-server.
+Fieldkit has two layers.
 
-A workspace always lives at `<project>/.fieldkit/`.
+**The workspace** is per-project: `<project>/.fieldkit/` holds that
+project's review queue, eval set, capture log, notes and fleet table.
+There is no database and no server.
+
+**The hub** is global: `~/.fieldkit/` holds the register of every project
+you have pointed Fieldkit at, one **central ledger** that all of them
+write into, and the record of the running server.
+
+The console is one always-on service that serves the hub. It is not
+started per project — you start it once and switch between projects in
+the sidebar.
+
+```
+~/.fieldkit/
+  hub.json       the project register and the server record
+  ledger.log     the central log, every project, in order
+```
+
+Override the hub with `FIELDKIT_HUB`.
+
+## The central ledger
+
+Every event is written twice: once to the project's own log, once to the
+central ledger with the project name attached.
+
+```bash
+fieldkit log          # this project's log
+fieldkit log --all    # every project, in one file, in order
+```
+
+```
+2026-10-18 15:13:24 | acme      | note       | amin | proxy blocked
+2026-10-18 15:13:24 | globex    | note       | amin | refund issued
+```
+
+This is the file to read when you want to know what happened across all
+your customers, not just the one you are sitting in.
 
 ## Changing the workspace
 
@@ -40,37 +73,68 @@ fieldkit -w /work/acme/.fieldkit start   # -> /work/acme/.fieldkit
 
 ### In the web console
 
-The **Workspace** box in the sidebar. Type a path and it switches
-immediately — useful for jumping between customers without restarting.
-The console shows the resolved path under the box, so you always know
-which one you are looking at.
+The **Project** box in the sidebar. It lists every registered project;
+pick one and the whole console switches to it. The choice is per browser
+session, so you can have two tabs on two different customers.
 
 ### Checking where you are
 
 ```bash
-fieldkit config show
+fieldkit config show     # the workspace this command uses
+fieldkit projects        # every registered project
+fieldkit hub             # where the hub is, and whether the server is up
 ```
 
-```json
-{
-  "workspace": "/work/acme/.fieldkit",
-  ...
-}
+## The always-on console
+
+```bash
+cd /work/acme
+fieldkit start
 ```
 
-That first line is the answer to "which workspace am I in".
+This registers `acme` as a project and brings the console up.
+
+Run it again in another directory and it registers that one too, then
+tells you the console is already running:
+
+```
+Registered project 'globex' -> /work/globex
+Fieldkit is already running at http://localhost:8501
+Project 'globex' is registered.
+```
+
+**Ports.** If something else already has 8501, Fieldkit moves to the next
+free port and says so rather than failing:
+
+```
+Port 8501 was busy, using 8502 instead.
+Fieldkit console at http://localhost:8502
+```
+
+If *our own* server is on the port, `fieldkit start` does not start a
+second one — it just tells you where the running one is.
 
 ### Starting a new project
 
 ```bash
 cd /work/new-customer
-fieldkit init     # scaffolds ./.fieldkit/
+fieldkit init     # scaffolds ./.fieldkit/ and registers it
 fieldkit start
 ```
 
 `init` creates the folder, a `config.json`, a `fleet.yaml` with two
 example rows, an empty `notes.md`, and a `README.md` inside the
 workspace explaining every file in it.
+
+### Registering a project without starting anything
+
+```bash
+fieldkit projects                        # list
+fieldkit projects --remove /work/old     # unregister
+```
+
+Any Fieldkit command run in a directory registers that directory as a
+project, so the list fills up as you work.
 
 ## Setting up
 
@@ -315,10 +379,12 @@ fieldkit connector list
 
 ## `log` — the activity log
 
-Plain text, one event per line.
+Plain text, one event per line. Written to the project's log **and** the
+central ledger.
 
 ```bash
-fieldkit log
+fieldkit log              # this project
+fieldkit log --all        # every project, in the central ledger
 fieldkit log --limit 20
 fieldkit log --follow
 ```
@@ -327,6 +393,26 @@ fieldkit log --follow
 2026-10-18 14:42:01 | decision   | note_label -> bug | p=0.65 | 7655ms
 2026-10-18 14:42:01 | escalated  | note_label / eval:ev_1792313268796 | p=0.65
 2026-10-18 14:42:02 | resolved   | note_label / eval:ev_1792313268796 | -> bug | checklist 1/4
+```
+
+## `projects` / `hub` — the central register
+
+```bash
+fieldkit projects
+fieldkit hub
+```
+
+```
+project  path
+acme   * /work/acme
+globex   /work/globex
+```
+
+```
+Hub directory : /home/you/.fieldkit
+Ledger        : /home/you/.fieldkit/ledger.log
+Projects      : 2
+Server        : running at http://localhost:8501 (pid 250004)
 ```
 
 ## `llm` — the follow-up generator
@@ -363,7 +449,7 @@ fieldkit config set laya_checkpoint typed-decisions
 | `laya_checkpoint` | `english`, `multilingual`, `typed-decisions`    |
 | `gemma_model`     | Which local Gemma to use                        |
 
-## `start` — the web console
+## `start` — the always-on console
 
 ```bash
 fieldkit start
@@ -371,8 +457,8 @@ fieldkit start --port 9000
 fieldkit start --address 0.0.0.0 --open-browser
 ```
 
-Eight pages: Overview, HITL queue, Reports, Log, Follow-up, Eval cases,
-Notes, Fleet.
+Nine pages: Overview, Projects, HITL queue, Reports, Log, Follow-up, Eval
+cases, Notes, Fleet.
 
 ---
 

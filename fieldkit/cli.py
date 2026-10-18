@@ -6,9 +6,13 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
-from fieldkit import capture, connectors, discover, evals, explain, fleet, laya_engine, llm, log, notes, review, store
+from fieldkit import (
+    capture, connectors, discover, evals, explain, fleet, hub, laya_engine, llm, log,
+    notes, review, store,
+)
 from fieldkit.config import Config
 from fieldkit.decide import Verdict, decide, escalate, load_calibration, log_decision
 from fieldkit.dotenv import load_dotenv
@@ -49,6 +53,13 @@ class Ctx:
         load_dotenv()
 
         self.root = store.workspace(getattr(args, "workspace", None))
+        self.project = self.root.parent
+
+        # Any Fieldkit command in a directory makes that directory a
+        # project. The hub is the register of every project an FDE has
+        # worked in, and the console lists them all.
+        hub.register(self.project)
+
         self.config = Config.load(store.path_for(self.root, "config"))
         self.calibration = load_calibration(store.path_for(self.root, "calibration"))
         self.agent_calibration = store.path_for(self.root, "agent_calibration")
@@ -410,10 +421,11 @@ def cmd_connector_list(ctx: Ctx, args) -> int:
 
 def launch_web(root: Path, port: int = 8501, address: str = "localhost",
                open_browser: bool = False) -> int:
-    """Run the Streamlit console against a given workspace.
+    """Run the Streamlit console for the hub.
 
-    Shared by `fieldkit start` and the `fieldkit-web` console script so
-    both behave identically.
+    The server is a single always-on thing, not one per project. It is
+    not bound to a project either: the console lists every registered
+    project and lets you switch between them.
     """
     app = str(Path(__file__).resolve().parent / "web.py")
 
@@ -429,6 +441,21 @@ def launch_web(root: Path, port: int = 8501, address: str = "localhost",
         )
         return 1
 
+    # A busy port is only an error if it is somebody else's. If our own
+    # server is already on it, say where it is and stop.
+    if not hub.port_free(port):
+        record = hub.server_record()
+        if record and record.get("port") == port and hub.server_running():
+            print(f"Fieldkit is already running at {record.get('url')}")
+            print(f"Project '{root.parent.name}' is registered.")
+            _maybe_browse(record.get("url"), open_browser)
+            return 0
+        chosen = hub.find_free_port(port)
+        print(f"Port {port} was busy, using {chosen} instead.")
+        port = chosen
+
+    url = f"http://{address}:{port}"
+
     argv = [
         "streamlit", "run", app,
         "--server.port", str(port),
@@ -436,10 +463,18 @@ def launch_web(root: Path, port: int = 8501, address: str = "localhost",
         "--server.headless", "false" if open_browser else "true",
     ]
 
-    # The console must find this workspace, not whatever it guesses.
     os.environ["FIELDKIT_HOME"] = str(root)
+    os.environ["FIELDKIT_HUB_PORT"] = str(port)
 
-    print(f"Fieldkit console for {root}")
+    hub.set_server_record({
+        "pid": os.getpid(),
+        "port": port,
+        "url": url,
+        "started": round(time.time()),
+    })
+
+    print(f"Fieldkit console at {url}")
+    print(f"Registered project: {root.parent}")
     print("Ctrl+C to stop.\n")
 
     sys.argv = argv
@@ -447,6 +482,69 @@ def launch_web(root: Path, port: int = 8501, address: str = "localhost",
         stcli.main()
     except SystemExit as exc:
         return int(exc.code or 0)
+    finally:
+        hub.set_server_record(None)
+    return 0
+
+
+def _maybe_browse(url: str | None, open_browser: bool) -> None:
+    if not (url and open_browser):
+        return
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def cmd_start(ctx: Ctx, args) -> int:
+    """Register this project and bring up the console.
+
+    The console is one always-on service. Running `fieldkit start` in a
+    new directory registers that directory as a project and makes it
+    available in the console's project list. If the server is already
+    up, this just tells you where it is.
+    """
+    entry = hub.register(ctx.root.parent)
+    print(f"Registered project '{entry['name']}' -> {entry['path']}")
+    return launch_web(ctx.root, args.port, args.address, args.open_browser)
+
+
+def cmd_projects(ctx: Ctx, args) -> int:
+    """List every registered project."""
+    if args.remove:
+        removed = hub.unregister(args.remove)
+        print(f"Removed {args.remove}" if removed else f"{args.remove} was not registered.")
+        return 0 if removed else 1
+
+    entries = hub.projects()
+    if not entries:
+        print("No projects registered yet.")
+        print("Run `fieldkit start` in a project directory to register it.")
+        return 0
+
+    width = max(len(e.get("name", "")) for e in entries)
+    print(f"{'project'.ljust(width)}  path")
+    for entry in entries:
+        marker = "*" if entry.get("path") == str(ctx.root.parent) else " "
+        print(f"{entry.get('name', '').ljust(width)} {marker} {entry.get('path')}")
+    return 0
+
+
+def cmd_hub(ctx: Ctx, args) -> int:
+    """Show the central hub: where it is and whether the server is up."""
+    record = hub.server_record()
+    print(f"Hub directory : {hub.hub_dir()}")
+    print(f"Ledger        : {hub.ledger_path()}")
+    print(f"Projects      : {len(hub.projects())}")
+
+    if record and hub.server_running():
+        print(f"Server        : running at {record.get('url')} (pid {record.get('pid')})")
+    elif record:
+        print(f"Server        : not running (stale record for {record.get('url')})")
+    else:
+        print("Server        : not running")
     return 0
 
 
@@ -491,16 +589,6 @@ def cmd_init(ctx: Ctx, args) -> int:
     return 0
 
 
-def cmd_start(ctx: Ctx, args) -> int:
-    """Launch the web console for this directory.
-
-    The workspace is this directory's `.fieldkit/`, so running it from a
-    customer project keeps that project's reports, queue and notes
-    together and out of the way of every other project.
-    """
-    return launch_web(ctx.root, args.port, args.address, args.open_browser)
-
-
 def cmd_llm_status(ctx: Ctx, args) -> int:
     rows = llm.describe()
     width = max(len(r["name"]) for r in rows)
@@ -538,7 +626,16 @@ def cmd_llm_ask(ctx: Ctx, args) -> int:
 
 
 def cmd_log(ctx: Ctx, args) -> int:
-    """Print the plain-text log."""
+    """Print the plain-text log.
+
+    `--all` shows the central ledger instead: every project, in one
+    file, in order.
+    """
+    if args.all:
+        lines = hub.read_ledger(args.limit)
+        print("\n".join(lines) if lines else "The central ledger is empty.")
+        return 0
+
     if args.follow:
         try:
             for line in _follow(ctx.root, args.limit):
@@ -556,7 +653,6 @@ def _follow(root, limit):
     """Tail the log, the way `tail -f` would."""
     import time
 
-    path = log.path(root)
     shown = 0
     while True:
         entries = log.lines(root)
@@ -735,13 +831,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser(
         "start",
-        help="launch the web console for this directory",
+        help="register this project and bring up the console",
     )
-    st.add_argument("--port", type=int, default=8501)
+    st.add_argument("--port", type=int, default=hub.DEFAULT_PORT)
     st.add_argument("--address", default="localhost")
     st.add_argument("--headless", action="store_true", default=True)
     st.add_argument("--open-browser", dest="open_browser", action="store_true")
     st.set_defaults(func=cmd_start)
+
+    pj = sub.add_parser("projects", help="list every registered project")
+    pj.add_argument("--remove", metavar="PATH",
+                    help="unregister a project (the path, not the name)")
+    pj.set_defaults(func=cmd_projects)
+
+    hb = sub.add_parser("hub", help="show the central hub and server status")
+    hb.set_defaults(func=cmd_hub)
 
     lg = sub.add_parser("llm", help="the text generator used for follow-up answers")
     lgs = lg.add_subparsers(dest="llm_command", required=True)
@@ -760,6 +864,8 @@ def build_parser() -> argparse.ArgumentParser:
     lgp = sub.add_parser("log", help="the plain-text activity log")
     lgp.add_argument("--limit", type=int, help="show only the last N lines")
     lgp.add_argument("--follow", "-f", action="store_true", help="tail the log")
+    lgp.add_argument("--all", action="store_true",
+                     help="show the central ledger: every project, in order")
     lgp.set_defaults(func=cmd_log)
 
     cf = sub.add_parser("config", help="workspace configuration")

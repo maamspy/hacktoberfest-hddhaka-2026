@@ -32,6 +32,7 @@ from fieldkit import (  # noqa: E402
     evals,
     explain,
     fleet,
+    hub,
     laya_engine,
     llm,
     log,
@@ -45,6 +46,7 @@ from fieldkit.dotenv import load_dotenv  # noqa: E402
 
 PAGES = (
     "Overview",
+    "Projects",
     "HITL queue",
     "Reports",
     "Log",
@@ -168,7 +170,6 @@ def page_overview(root, config, calibration) -> None:
     pending = review.pending(root)
     done = review.resolved(root)
     approved = evals.list_approved(root)
-    pending_evals = evals.list_pending(root)
     summary = evals.summarise(root)
 
     cols = st.columns(4)
@@ -196,6 +197,23 @@ def page_overview(root, config, calibration) -> None:
         else:
             st.warning("No generator available — follow-up questions cannot be answered.")
             st.caption("Build llama.cpp, run `fieldkit llm pull`, or set a key in .env")
+
+    st.markdown("---")
+    st.markdown("**Every project**")
+    st.caption("The queue across all registered projects.")
+    rows = []
+    for entry in hub.projects():
+        project_root = store.workspace(entry.get("path", ""))
+        rows.append({
+            "project": entry.get("name"),
+            "waiting": len(review.pending(project_root)),
+            "resolved": len(review.resolved(project_root)),
+            "evals": len(evals.list_approved(project_root)),
+        })
+    if rows:
+        st.dataframe(rows, width="stretch", hide_index=True)
+    else:
+        st.caption("No projects registered yet.")
 
     st.markdown("---")
     st.markdown("**Recent activity**")
@@ -447,20 +465,76 @@ def _show_report(root: Path, name: str) -> None:
     st.dataframe(payload.get("checks", []), width="stretch", hide_index=True)
 
 
+def page_projects(root, config, calibration) -> None:
+    st.subheader("Projects")
+    st.caption(
+        "Every project Fieldkit has been pointed at. The console is one "
+        "always-on service; this is the list it serves. Switch between "
+        "them from the sidebar."
+    )
+
+    entries = hub.projects()
+    if not entries:
+        st.info("No projects registered yet. Run `fieldkit start` in a project directory.")
+        return
+
+    st.dataframe(
+        [
+            {
+                "project": e.get("name"),
+                "path": e.get("path"),
+                "registered": e.get("registered"),
+                "seen": e.get("seen"),
+            }
+            for e in entries
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown("---")
+    st.markdown("**Register another**")
+    path = st.text_input("Project directory", value="")
+    if st.button("Register", type="primary") and path.strip():
+        entry = hub.register(path.strip())
+        st.success(f"Registered '{entry['name']}'.")
+        st.rerun()
+
+    with st.expander("Hub"):
+        st.code(
+            f"hub      : {hub.hub_dir()}\n"
+            f"ledger   : {hub.ledger_path()}\n"
+            f"projects : {len(entries)}",
+            language=None,
+        )
+        record = hub.server_record()
+        if record and hub.server_running():
+            st.success(f"Server running at {record.get('url')}")
+        else:
+            st.warning("Server not running. Start it with `fieldkit start`.")
+
+
 def page_log(root, config, calibration) -> None:
     st.subheader("Log")
     st.caption(
-        f"Plain text, one event per line. Also on disk at "
-        f"`{log.path(root)}` — and `fieldkit log --follow` tails it."
+        f"The central ledger covers every project; this project's own log "
+        f"is at `{log.path(root)}`."
     )
+
+    scope = st.radio("Show", ["This project", "All projects"], horizontal=True)
 
     col_a, col_b, col_c = st.columns([1, 1, 3])
     limit = col_a.number_input("Lines", 10, 5000, 200, 50)
     if col_b.button("Refresh"):
         st.rerun()
-    col_c.caption("The file is append-only; refresh to pick up new entries.")
+    col_c.caption("The ledger is append-only; refresh to pick up new entries.")
 
-    text = log.read(root, int(limit))
+    if scope == "All projects":
+        lines = hub.read_ledger(int(limit))
+        text = "\n".join(lines) if lines else "The central ledger is empty."
+    else:
+        text = log.read(root, int(limit))
+
     st.code(text, language=None)
 
 
@@ -635,6 +709,37 @@ def page_fleet(root, config, calibration) -> None:
 # --------------------------------------------------------------------------
 
 
+def pick_project() -> str:
+    """Choose the active project from the hub register.
+
+    The console is one always-on service serving many projects, so the
+    switcher lives in the sidebar and the choice is per browser
+    session. Selecting a project registers it if it is new, so
+    `fieldkit start` in a directory and picking it here are the same
+    action.
+    """
+    entries = hub.projects()
+
+    if not entries:
+        st.sidebar.info("No projects yet. Run `fieldkit start` in a project directory.")
+        return os.environ.get("FIELDKIT_HOME") or ".fieldkit"
+
+    labels = [f"{e.get('name', '')}  —  {e.get('path', '')}" for e in entries]
+    current = st.session_state.get("project_path")
+
+    index = 0
+    if current:
+        for position, entry in enumerate(entries):
+            if entry.get("path") == current:
+                index = position
+                break
+
+    choice = st.sidebar.selectbox("Project", labels, index=index)
+    selected = entries[labels.index(choice)]
+    st.session_state["project_path"] = selected.get("path")
+    return selected.get("path")
+
+
 def main() -> None:
     st.set_page_config(page_title="Fieldkit", layout="wide")
     inject_css()
@@ -646,9 +751,8 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    default_workspace = os.environ.get("FIELDKIT_HOME") or ".fieldkit"
-    workspace = st.sidebar.text_input("Workspace", default_workspace)
-    root, config, calibration = ctx(workspace)
+    project = pick_project()
+    root, config, calibration = ctx(project)
 
     st.sidebar.divider()
     st.sidebar.caption(f"Workspace: `{root}`")
@@ -657,6 +761,8 @@ def main() -> None:
 
     if choice == "Overview":
         page_overview(root, config, calibration)
+    elif choice == "Projects":
+        page_projects(root, config, calibration)
     elif choice == "HITL queue":
         page_queue(root, config, calibration)
     elif choice == "Reports":

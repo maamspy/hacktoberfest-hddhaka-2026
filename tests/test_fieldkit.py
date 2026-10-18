@@ -620,6 +620,94 @@ def test_confident_discovery_failures_are_not_queued(root, monkeypatch):
     assert review.pending(root) == []
 
 
+# --- the central hub -----------------------------------------------------
+
+
+@pytest.fixture()
+def hub(tmp_path, monkeypatch):
+    """An isolated hub so tests never touch the real one."""
+    monkeypatch.setenv("FIELDKIT_HUB", str(tmp_path / "hub"))
+    from fieldkit import hub as hub_module
+
+    return hub_module
+
+
+def test_hub_registers_projects_once(hub):
+    hub.register("/tmp/project-a")
+    hub.register("/tmp/project-a")
+    hub.register("/tmp/project-b")
+
+    paths = [e["path"] for e in hub.projects()]
+    assert len(paths) == 2
+    assert str(hub.hub_dir()).endswith("hub")
+
+
+def test_hub_project_names_come_from_the_directory(hub, tmp_path):
+    entry = hub.register(tmp_path / "acme")
+    assert entry["name"] == "acme"
+    assert entry["path"] == str((tmp_path / "acme").resolve())
+
+
+def test_hub_server_record_round_trips(hub):
+    assert hub.server_record() is None
+    hub.set_server_record({"pid": 1, "port": 8501, "url": "http://localhost:8501"})
+    assert hub.server_record()["port"] == 8501
+    hub.set_server_record(None)
+    assert hub.server_record() is None
+
+
+def test_find_free_port_skips_a_busy_port(hub):
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        busy = taken.getsockname()[1]
+
+        assert hub.port_free(busy) is False
+        chosen = hub.find_free_port(busy)
+        assert chosen != busy
+        assert hub.port_free(chosen) is True
+
+
+def test_central_ledger_collects_every_project(hub, tmp_path, monkeypatch):
+    monkeypatch.setenv("FIELDKIT_HUB", str(tmp_path / "hub"))
+    from fieldkit import log as log_module
+
+    for name, body in (("acme", "proxy blocked"), ("globex", "refund issued")):
+        root = store.workspace(str(tmp_path / name))
+        log_module.record(root, "note", body)
+
+    lines = hub.read_ledger()
+    assert len(lines) == 2
+    assert any("acme" in line and "proxy blocked" in line for line in lines)
+    assert any("globex" in line and "refund issued" in line for line in lines)
+
+
+def test_central_ledger_can_be_filtered_to_one_project(hub, tmp_path, monkeypatch):
+    monkeypatch.setenv("FIELDKIT_HUB", str(tmp_path / "hub"))
+    from fieldkit import log as log_module
+
+    for name, body in (("acme", "one"), ("globex", "two")):
+        log_module.record(store.workspace(str(tmp_path / name)), "note", body)
+
+    only_acme = hub.read_ledger(project="acme")
+    assert len(only_acme) == 1
+    assert "one" in only_acme[0]
+
+
+def test_a_broken_hub_never_breaks_a_log_write(tmp_path, monkeypatch):
+    """A decision must still be logged if the hub is broken."""
+    from fieldkit import log as log_module
+
+    monkeypatch.setenv("FIELDKIT_HUB", "/proc/definitely/not/writable")
+    root = store.workspace(str(tmp_path / "p"))
+    log_module.record(root, "note", "still written")
+
+    assert "still written" in log_module.read(root)
+
+
 # --- capture log ---------------------------------------------------------
 
 
