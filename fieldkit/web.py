@@ -402,7 +402,9 @@ def _write_checked(root: Path, index: int, done: list[str]) -> None:
 def page_reports(root, config, calibration) -> None:
     st.subheader("Reports")
 
-    tab_a, tab_b, tab_c = st.tabs(["Environment", "Evals", "Capture log"])
+    tab_a, tab_b, tab_c, tab_d = st.tabs(
+        ["Environment", "Evals", "Capture log", "Files"]
+    )
 
     with tab_a:
         st.markdown("**Environment discovery**")
@@ -453,6 +455,77 @@ def page_reports(root, config, calibration) -> None:
             )
         else:
             st.info("No captured calls yet.")
+
+    with tab_d:
+        _show_report_files(root)
+
+
+def _show_report_files(root) -> None:
+    """Every generated report file, rendered."""
+    directory = store.path_for(root, "capture").parent / "reports"
+    files = sorted(directory.glob("*.json")) if directory.exists() else []
+    if not files:
+        st.info("No reports yet. Run a discovery probe to make one.")
+        return
+
+    for path in files:
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+
+        with st.expander(path.stem, expanded=path.stem != "discover"):
+            title = payload.get("title")
+            if title:
+                st.markdown(f"**{title}**")
+            if payload.get("summary"):
+                st.markdown(payload["summary"])
+
+            invoice = payload.get("invoice")
+            if invoice:
+                st.markdown("**Line items**")
+                st.dataframe(
+                    [
+                        {
+                            "item": i["item"],
+                            "quantity": f"{i['quantity']:,}",
+                            "unit": i["unit"],
+                            "amount": f"${i['amount']:,.2f}",
+                        }
+                        for i in invoice["line_items"]
+                    ]
+                    + [{
+                        "item": "**Total**",
+                        "quantity": "",
+                        "unit": "",
+                        "amount": f"**${invoice['total']:,.2f}**",
+                    }],
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.caption(
+                    f"Previous period: ${invoice['previous_period_total']:,.2f} · "
+                    f"{invoice['multiple']}x · delta ${invoice['delta']:,.2f}"
+                )
+
+            finding = payload.get("finding")
+            if finding:
+                st.markdown("**Finding**")
+                st.markdown(f"- **Start**: {finding.get('start')} — {finding.get('change')}")
+                st.markdown(f"- **Mechanism**: {finding.get('mechanism')}")
+                st.markdown(f"- **Fix**: {finding.get('fix')}")
+                st.markdown(f"- **Verified**: {finding.get('verified')}")
+
+            if payload.get("open"):
+                st.markdown("**Open**")
+                for item in payload["open"]:
+                    st.markdown(f"- {item}")
+
+            if payload.get("checks"):
+                st.dataframe(payload["checks"], width="stretch", hide_index=True)
+
+            if not (invoice or finding or payload.get("checks")):
+                st.json(payload, expanded=False)
 
 
 def _run_discovery(root, config, calibration, endpoint: str) -> None:
