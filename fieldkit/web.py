@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from html import escape as _escape
 from pathlib import Path
 
@@ -167,16 +168,40 @@ def verdict_card(verdict: Verdict) -> None:
 def page_overview(root, config, calibration) -> None:
     st.subheader("Overview")
 
-    pending = review.pending(root)
-    done = review.resolved(root)
-    approved = evals.list_approved(root)
-    summary = evals.summarise(root)
+    # The top line is the whole portfolio. The per-project breakdown is
+    # below it. A metric that only describes the project you happen to
+    # be looking at is not an overview.
+    projects = hub.projects()
+    totals = {"waiting": 0, "resolved": 0, "evals": 0, "runs": 0, "correct": 0}
+    rows = []
+
+    for entry in projects:
+        project_root = store.workspace(entry.get("path", ""))
+        waiting = len(review.pending(project_root))
+        resolved = len(review.resolved(project_root))
+        approved = len(evals.list_approved(project_root))
+        summary = evals.summarise(project_root)
+
+        totals["waiting"] += waiting
+        totals["resolved"] += resolved
+        totals["evals"] += approved
+        totals["runs"] += summary.get("runs", 0)
+        totals["correct"] += summary.get("runs", 0) * (summary.get("accuracy") or 0)
+
+        rows.append({
+            "project": entry.get("name"),
+            "waiting": waiting,
+            "resolved": resolved,
+            "evals": approved,
+            "accuracy": f"{summary['accuracy']:.0%}" if summary.get("runs") else "—",
+        })
 
     cols = st.columns(4)
-    cols[0].metric("Waiting on a human", len(pending))
-    cols[1].metric("Resolved", len(done))
-    cols[2].metric("Approved eval cases", len(approved))
-    cols[3].metric("Eval accuracy", f"{summary.get('accuracy', 0):.0%}" if summary.get("runs") else "—")
+    cols[0].metric("Waiting on a human", totals["waiting"])
+    cols[1].metric("Resolved", totals["resolved"])
+    cols[2].metric("Projects", len(projects))
+    accuracy = f"{totals['correct'] / totals['runs']:.0%}" if totals["runs"] else "—"
+    cols[3].metric("Eval accuracy", accuracy)
 
     st.markdown("---")
 
@@ -199,17 +224,8 @@ def page_overview(root, config, calibration) -> None:
             st.caption("Build llama.cpp, run `fieldkit llm pull`, or set a key in .env")
 
     st.markdown("---")
-    st.markdown("**Every project**")
-    st.caption("The queue across all registered projects.")
-    rows = []
-    for entry in hub.projects():
-        project_root = store.workspace(entry.get("path", ""))
-        rows.append({
-            "project": entry.get("name"),
-            "waiting": len(review.pending(project_root)),
-            "resolved": len(review.resolved(project_root)),
-            "evals": len(evals.list_approved(project_root)),
-        })
+    st.markdown("**Projects**")
+    st.caption("The queue across every registered project.")
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True)
     else:
@@ -217,52 +233,75 @@ def page_overview(root, config, calibration) -> None:
 
     st.markdown("---")
     st.markdown("**Recent activity**")
-    activity = recent_activity(root)
+    st.caption("Everything, across every project, most recent first.")
+    activity = recent_activity()
     if activity:
         st.dataframe(activity, width="stretch", hide_index=True)
     else:
         st.caption("Nothing yet. Run `fieldkit discover` or add an eval case.")
 
 
-def recent_activity(root: Path) -> list[dict]:
-    """A single timeline of everything that happened in this workspace."""
+def _when(value) -> str:
+    """A readable timestamp. Raw epoch floats in a table are noise."""
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError):
+        return str(value or "")
+    if stamp <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+
+
+def recent_activity(projects: list[dict] | None = None) -> list[dict]:
+    """A single timeline of everything that happened, across every project."""
     rows: list[dict] = []
 
-    for row in store.read_jsonl(store.path_for(root, "review")):
-        rows.append({
-            "when": row.get("ts", ""),
-            "what": f"review: {row.get('key')}",
-            "detail": f"{row.get('proposed')} · {row.get('status')}",
-        })
+    for entry in projects if projects is not None else hub.projects():
+        name = entry.get("name", "")
+        project_root = store.workspace(entry.get("path", ""))
 
-    for row in store.read_jsonl(store.path_for(root, "capture")):
-        rows.append({
-            "when": row.get("ts", ""),
-            "what": "capture",
-            "detail": f"{row.get('model')} · {row.get('prompt_version')}",
-        })
+        for row in store.read_jsonl(store.path_for(project_root, "review")):
+            rows.append({
+                "when": _when(row.get("ts")),
+                "project": name,
+                "what": f"review: {row.get('key')}",
+                "detail": f"{row.get('proposed')} · {row.get('status')}",
+            })
 
-    results = store.read_jsonl(store.path_for(root, "evals").with_suffix(".results.jsonl"))
-    for row in results:
-        rows.append({
-            "when": row.get("ts", ""),
-            "what": f"eval: {row.get('id')}",
-            "detail": f"expected {row.get('expected')} · got {row.get('predicted')}",
-        })
+        for row in store.read_jsonl(store.path_for(project_root, "capture")):
+            rows.append({
+                "when": _when(row.get("ts")),
+                "project": name,
+                "what": "capture",
+                "detail": f"{row.get('model')} · {row.get('prompt_version')}",
+            })
 
-    for path in sorted(store.path_for(root, "capture").parent.glob("reports/*.json")):
-        try:
-            payload = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        rows.append({
-            "when": payload.get("ts", ""),
-            "what": f"report: {path.stem}",
-            "detail": payload.get("summary", ""),
-        })
+        for row in store.read_jsonl(
+            store.path_for(project_root, "evals").with_suffix(".results.jsonl")
+        ):
+            rows.append({
+                "when": _when(row.get("ts")),
+                "project": name,
+                "what": f"eval: {row.get('id')}",
+                "detail": f"expected {row.get('expected')} · got {row.get('predicted')}",
+            })
 
-    rows.sort(key=lambda r: str(r["when"]), reverse=True)
-    return rows[:50]
+        for path in sorted(
+            store.path_for(project_root, "capture").parent.glob("reports/*.json")
+        ):
+            try:
+                payload = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            rows.append({
+                "when": _when(payload.get("ts")),
+                "project": name,
+                "what": f"report: {path.stem}",
+                "detail": payload.get("summary", ""),
+            })
+
+    rows.sort(key=lambda r: r["when"], reverse=True)
+    return rows[:60]
 
 
 def page_queue(root, config, calibration) -> None:
